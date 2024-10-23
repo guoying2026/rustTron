@@ -1,0 +1,9 @@
+/target/
+config.toml
+
+# 忽略构建生成的二进制文件（如果有）
+/*.exe
+/*.dll
+/*.so
+/*.dylib
+/*.bin
