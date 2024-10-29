@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
 
     // 构建 TRC20 交易的查询 URL
     let trc20_url = format!(
-        "https://nile.trongrid.io/v1/accounts/{}/transactions/trc20?limit=10",
+        "https://nile.trongrid.io/v1/accounts/{}/transactions/trc20?only_confirmed=true&limit=10",
         address
     );
 
@@ -102,7 +102,7 @@ async fn fetch_and_process_transactions(
     // 1. 获取所有 is_pay = 0 的记录，按 id 升序排序
     let pending_records = sqlx::query_as!(
         PendingRecord,
-        "SELECT id, pay_token, user_wallet FROM pay_records WHERE is_pay = 0 ORDER BY id ASC"
+        "SELECT id, pay_token FROM pay_records WHERE is_pay = 0 ORDER BY id ASC"
     )
         .fetch_all(&pool)
         .await?;
