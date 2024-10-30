@@ -1,6 +1,6 @@
 use sqlx::{mysql::{MySqlConnectOptions, MySqlPoolOptions}, MySqlPool};
 use serde::Deserialize;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use config::{Config, File};
 use dotenv::dotenv;
 use std::env;
@@ -67,6 +67,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
 
     // 无限循环，持续监测 is_pay = 0 的记录
     loop {
+        // 检查并更新超过10分钟未支付的记录
+        let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+
+        // 选择所有 is_pay = 0 的记录，且 create_time 超过10分钟
+        let expired_records = sqlx::query!(
+            "SELECT id FROM pay_records WHERE is_pay = 0 AND ? - UNIX_TIMESTAMP(create_time) > 600",
+            current_time
+        )
+            .fetch_all(&pool)
+            .await?;
+
+        // 更新这些记录的 is_pay 为3
+        for record in expired_records {
+            sqlx::query!("UPDATE pay_records SET is_pay = 3 WHERE id = ?", record.id)
+                .execute(&pool)
+                .await?;
+            println!("已将记录 id={} 的 is_pay 更新为 3，因为已超过 10 分钟未支付。", record.id);
+        }
+
         // 获取最早的未支付记录的创建时间
         let min_create_time: Option<PrimitiveDateTime> = sqlx::query_scalar!(
             "SELECT create_time FROM pay_records WHERE is_pay = 0 ORDER BY id ASC LIMIT 1"
