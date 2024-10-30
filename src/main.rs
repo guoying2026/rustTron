@@ -6,6 +6,7 @@ use dotenv::dotenv;
 use std::env;
 use bigdecimal::BigDecimal;
 use std::str::FromStr;
+use sqlx::types::time::PrimitiveDateTime;
 
 #[derive(Debug, Deserialize)]
 struct Settings {
@@ -64,25 +65,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
 
     let address = settings.address.clone();
 
-    // 构建 TRC20 交易的查询 URL
-    let trc20_url = format!(
-        "https://nile.trongrid.io/v1/accounts/{}/transactions/trc20?only_confirmed=true&limit=10",
-        address
-    );
-
     // 无限循环，持续监测 is_pay = 0 的记录
     loop {
-        // 检查是否存在未支付的记录
-        let pending_count: i64 = sqlx::query_scalar!(
-            "SELECT COUNT(*) FROM pay_records WHERE is_pay = 0"
+        // 获取最早的未支付记录的创建时间
+        let min_create_time: Option<PrimitiveDateTime> = sqlx::query_scalar!(
+            "SELECT create_time FROM pay_records WHERE is_pay = 0 ORDER BY id ASC LIMIT 1"
         )
-            .fetch_one(&pool)
+            .fetch_optional(&pool)
             .await?;
 
-        if pending_count > 0 {
+        if let Some(min_time) = min_create_time {
+            // 打印人类可读的日期和时间
+            println!("最早的未支付记录创建时间: {}", min_time);
+
+            let min_timestamp = min_time.assume_utc().unix_timestamp();
+            println!("最小创建时间的 UNIX 时间戳: {}", min_timestamp); // 打印 min_timestamp
+            // 正式网的链接
+            // let trc20_url = format!(
+            //     "https://api.trongrid.io/v1/accounts/{}/transactions/trc20?only_confirmed=true&limit=10",
+            //     address
+            // );
+            let trc20_url = format!(
+                "https://nile.trongrid.io/v1/accounts/{}/transactions/trc20?only_confirmed=true&limit=10&min_timestamp={}",
+                address,
+                min_timestamp
+            );
+
             println!("发现未支付的记录，开始处理...");
-            fetch_and_process_transactions(trc20_url.clone(), pool.clone(), address.clone())
-                .await?;
+            fetch_and_process_transactions(trc20_url.clone(), pool.clone(), address.clone()).await?;
         } else {
             println!("没有未支付的记录，等待中...");
             tokio::time::sleep(Duration::from_secs(10)).await;
@@ -141,7 +151,8 @@ async fn fetch_and_process_transactions(
         let response = reqwest::get(&current_url).await?;
         if response.status().is_success() {
             let transaction_data: TransactionData = response.json().await?;
-
+            // 打印解析后的 `transaction_data`
+            // println!("解析后的交易数据: {:#?}", transaction_data);
             for (i, transaction) in transaction_data.data.iter().enumerate() {
                 // 如果当前交易的 tx_id 等于上一个记录的 transaction_id，则停止遍历
                 if let Some(ref last_tx_id) = last_transaction_id {
@@ -171,11 +182,15 @@ async fn fetch_and_process_transactions(
                     Some(v) => v.clone(),
                     None => continue, // 如果 value 为空，跳过此交易
                 };
-
+                // 检查 token_info 是否存在，并且 symbol 是否为 "USDT"。这个是只获取usdt的链接
                 let token_info = match transaction.token_info.as_ref() {
-                    Some(info) => info,
-                    None => continue, // 如果 token_info 为空，跳过此交易
+                    Some(info) if info.symbol == "USDT" => info,
+                    _ => continue, // 如果 token_info 不存在或 symbol 不是 "USDT"，跳过此交易
                 };
+                // let token_info = match transaction.token_info.as_ref() {
+                //     Some(info) => info,
+                //     None => continue, // 如果 token_info 为空，跳过此交易
+                // };
 
                 // 获取 decimals 值
                 let decimals = token_info.decimals;
@@ -204,7 +219,16 @@ async fn fetch_and_process_transactions(
                 }
                 // 检查当前交易金额和发送者是否在未支付记录中
                 if let Some(pos) = pending_amounts.iter().position(|(_, amount)| {
-                    amount == &readable_amount
+                    // 判断 readable_amount 是否在 amount - 2 的范围内
+                    let in_range = &readable_amount >= &(amount - BigDecimal::from(2)) && &readable_amount < amount;
+
+                    // 比较 amount 和 readable_amount 的前三位小数
+                    let amount_truncated = amount.with_scale(3); // 取 amount 的前三位小数
+                    let readable_truncated = readable_amount.with_scale(3); // 取 readable_amount 的前三位小数
+                    let decimals_match = amount_truncated == readable_truncated;
+
+                    // 满足范围和小数匹配条件
+                    in_range && decimals_match
                 }) {
                     let (id, _) = pending_amounts.remove(pos);
 
