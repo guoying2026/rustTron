@@ -1,12 +1,13 @@
 use sqlx::{mysql::{MySqlConnectOptions, MySqlPoolOptions}, MySqlPool};
 use serde::Deserialize;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use config::{Config, File};
 use dotenv::dotenv;
 use std::env;
 use bigdecimal::BigDecimal;
 use std::str::FromStr;
+use chrono::{Duration, Local, NaiveDateTime};
 use sqlx::types::time::PrimitiveDateTime;
+use tokio::time::Duration as TokioDuration;
 
 #[derive(Debug, Deserialize)]
 struct Settings {
@@ -67,24 +68,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
 
     // 无限循环，持续监测 is_pay = 0 的记录
     loop {
-        // 检查并更新超过10分钟未支付的记录
-        let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+        // 生成 10 分钟前的时间
+        let cutoff_time = Local::now() - Duration::minutes(10);
+        let cutoff_time_str = cutoff_time.format("%Y-%m-%d %H:%M:%S").to_string();
 
-        // 选择所有 is_pay = 0 的记录，且 create_time 超过10分钟
-        let expired_records = sqlx::query!(
-            "SELECT id FROM pay_records WHERE is_pay = 0 AND ? - UNIX_TIMESTAMP(create_time) > 600",
-            current_time
+        // 选择所有 is_pay = 0 的记录，且 create_time 超过10分钟，并批量更新
+        let rows_affected = sqlx::query!(
+            "UPDATE pay_records SET is_pay = 3 WHERE is_pay = 0 AND create_time < ?",
+            cutoff_time_str
         )
-            .fetch_all(&pool)
+            .execute(&pool)
             .await?;
 
-        // 更新这些记录的 is_pay 为3
-        for record in expired_records {
-            sqlx::query!("UPDATE pay_records SET is_pay = 3 WHERE id = ?", record.id)
-                .execute(&pool)
-                .await?;
-            println!("已将记录 id={} 的 is_pay 更新为 3，因为已超过 10 分钟未支付。", record.id);
-        }
+        // 打印更新的记录数
+        println!("已将 {:?} 条记录的 is_pay 更新为 3，因为已超过 10 分钟未支付。", rows_affected);
 
         // 获取最早的未支付记录的创建时间
         let min_create_time: Option<PrimitiveDateTime> = sqlx::query_scalar!(
@@ -114,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
             fetch_and_process_transactions(trc20_url.clone(), pool.clone(), address.clone()).await?;
         } else {
             println!("没有未支付的记录，等待中...");
-            tokio::time::sleep(Duration::from_secs(10)).await;
+            tokio::time::sleep(TokioDuration::from_secs(10)).await;
         }
     }
 }
@@ -186,9 +183,11 @@ async fn fetch_and_process_transactions(
                     Some(f) => f.clone(),
                     None => continue, // 如果 from 为空，跳过此交易
                 };
-
+                //派生宏之所以要叫“派生”宏，是因为它们通过#[derive(...)]属性标记 自动派生 出特征的实现。
+                //这意味着，rust编译器会自动生成这些特征的实现代码，而无需开发者手动实现。
+                //clone可以让数据结构在参数传递的时候自动按字节拷贝。
                 let to = match &transaction.to {
-                    Some(t) => t.clone(),
+                    Some(t) => t.clone(),//clone派生
                     None => continue, // 如果 to 为空，跳过此交易
                 };
 
@@ -307,7 +306,7 @@ async fn fetch_and_process_transactions(
             if let Some(next_page) = transaction_data.next.clone() {
                 current_url = format!("https://nile.trongrid.io{}", next_page);
                 page += 1;
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                tokio::time::sleep(TokioDuration::from_secs(10)).await;
             } else {
                 println!("没有更多页面，停止遍历。");
                 break;
