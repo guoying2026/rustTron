@@ -203,7 +203,7 @@ async fn fetch_and_process_transactions(
                 };
                 // 检查 token_info 是否存在，并且 symbol 是否为 "USDT"。这个是只获取usdt的链接
                 let token_info = match transaction.token_info.as_ref() {
-                    Some(info) if info.symbol == "USDT" => info,
+                    Some(info) if info.symbol == "JST" => info,
                     _ => continue, // 如果 token_info 不存在或 symbol 不是 "USDT"，跳过此交易
                 };
                 // let token_info = match transaction.token_info.as_ref() {
@@ -232,14 +232,12 @@ async fn fetch_and_process_transactions(
                     to,
                     transaction.tx_id
                 );
-                for (id, amount) in &pending_amounts {
-                    println!("记录ID: {}, 金额: {}", id, amount);
-                    println!("当前交易金额: {}, 钱包地址: {}", readable_amount, from);
-                }
                 // 检查当前交易金额和发送者是否在未支付记录中
                 if let Some(pos) = pending_amounts.iter().position(|(_, amount)| {
+                    println!("{}", amount);
+                    println!("{}", readable_amount);
                     // 判断 readable_amount 是否在 amount - 2 的范围内
-                    let in_range = &readable_amount >= &(amount - BigDecimal::from(2)) && &readable_amount < amount;
+                    let in_range = &readable_amount >= &(amount - BigDecimal::from(2)) && &readable_amount <= amount;
 
                     // 比较 amount 和 readable_amount 的前三位小数
                     let amount_truncated = amount.with_scale(3); // 取 amount 的前三位小数
@@ -249,6 +247,7 @@ async fn fetch_and_process_transactions(
                     // 满足范围和小数匹配条件
                     in_range && decimals_match
                 }) {
+                    println!("命中");
                     let (id, _) = pending_amounts.remove(pos);
 
                     // 开启事务
